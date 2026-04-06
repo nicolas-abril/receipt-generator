@@ -141,6 +141,7 @@ def create_invoice_pdf(config, invoice_id, output_path, emission_date, lang='en'
             'bank': 'Bank',
             'bank_address': 'Bank address',
             'account_address': 'Account address',
+            'vat_number': 'VAT number'
         },
         'fr': {
             'invoice': 'Facture',
@@ -171,6 +172,7 @@ def create_invoice_pdf(config, invoice_id, output_path, emission_date, lang='en'
             'bank': 'Banque',
             'bank_address': 'Adresse de la banque',
             'account_address': 'Adresse du compte',
+            'vat_number': 'N° TVA intracommu.'
         }
     }[lang]
 
@@ -227,12 +229,13 @@ def create_invoice_pdf(config, invoice_id, output_path, emission_date, lang='en'
     c.setFont("Helvetica-Bold", 11)
     y_sender, _ = draw_wrapped_text(c, config['company']['legal_name'], margin + text_x_pad, y_sender, box_width - 2*text_x_pad, "Helvetica-Bold", 11, line_gap)
     c.setFont("Helvetica", 10)
-    y_sender, _ = draw_wrapped_text(c, config['company']['business_name'], margin + text_x_pad, y_sender, box_width - 2*text_x_pad, "Helvetica", 10, line_gap)
-    y_sender, _ = draw_wrapped_text(c, config['company']['contact_name'], margin + text_x_pad, y_sender, box_width - 2*text_x_pad, "Helvetica", 10, line_gap)
-    y_sender, _ = draw_wrapped_text(c, config['company']['email'], margin + text_x_pad, y_sender, box_width - 2*text_x_pad, "Helvetica", 10, line_gap)
-    y_sender, _ = draw_wrapped_text(c, config['company']['phone'], margin + text_x_pad, y_sender, box_width - 2*text_x_pad, "Helvetica", 10, line_gap)
-    y_sender, _ = draw_wrapped_text(c, config['company']['address'], margin + text_x_pad, y_sender, box_width - 2*text_x_pad, "Helvetica", 10, line_gap)
-    y_sender, _ = draw_wrapped_text(c, f"SIRET: {config['company']['siret']}", margin + text_x_pad, y_sender, box_width - 2*text_x_pad, "Helvetica", 10, line_gap)
+    y_sender, _ = draw_wrapped_text(c, config['company']['business_name']                          , margin + text_x_pad, y_sender, box_width - 2*text_x_pad, "Helvetica", 10, line_gap)
+    y_sender, _ = draw_wrapped_text(c, config['company']['contact_name']                           , margin + text_x_pad, y_sender, box_width - 2*text_x_pad, "Helvetica", 10, line_gap)
+    y_sender, _ = draw_wrapped_text(c, config['company']['phone']                                  , margin + text_x_pad, y_sender, box_width - 2*text_x_pad, "Helvetica", 10, line_gap)
+    y_sender, _ = draw_wrapped_text(c, config['company']['email']                                  , margin + text_x_pad, y_sender, box_width - 2*text_x_pad, "Helvetica", 10, line_gap)
+    y_sender, _ = draw_wrapped_text(c, config['company']['address']                                , margin + text_x_pad, y_sender, box_width - 2*text_x_pad, "Helvetica", 10, line_gap)
+    y_sender, _ = draw_wrapped_text(c, f"SIRET: {config['company']['siret']}"                      , margin + text_x_pad, y_sender, box_width - 2*text_x_pad, "Helvetica", 10, line_gap)
+    y_sender, _ = draw_wrapped_text(c, f"{labels['vat_number']}: {config['company']['vat_number']}", margin + text_x_pad, y_sender, box_width - 2*text_x_pad, "Helvetica", 10, line_gap)
     # Customer (was To)
     draw_box(c, margin + box_width + 40, y - box_height, box_width, box_height, label=labels['bill_to'])
     y_receiver = text_y_start - line_gap  # Start one line below the label
@@ -249,13 +252,14 @@ def create_invoice_pdf(config, invoice_id, output_path, emission_date, lang='en'
 
     data = [["#", labels['description'], labels['unit'], labels['quantity'], labels['unit_price'], labels['vat_col'], labels['total'], labels['total_incl_tax']]]
     services = config.get('services', [])
+    vat_rate = config.get('vat_rate', 0.0)
     for i, service in enumerate(services, 1):
         desc_col = wrap_table_cell(service.get('description', ''), col_widths[1], table_font_size)
         unit = service.get('unit', 'Month')
         quantity = service.get('quantity', 1)
         unit_price = service.get('amount_usd', 0.0)
-        vat = unit_price * quantity * 0.0  # Set VAT logic as needed
         total = unit_price * quantity
+        vat = total * (vat_rate / 100.0)
         total_incl_tax = total + vat
         data.append([
             str(i),
@@ -424,11 +428,16 @@ def extract_text_from_pdf(pdf_path):
 
 def main():
     config = read_config()
-    # Check that the sum of service prices matches the total in the JSON
+    # Calculate totals from services
     services = config.get('services', [])
-    total_services = sum(service.get('amount_usd', 0.0) * service.get('quantity', 1) for service in services)
-    if round(total_services, 2) != round(config.get('amount_excl_tax', 0.0), 2):
-        raise ValueError(f"Sum of service prices (${total_services:,.2f}) does not match amount_excl_tax (${config.get('amount_excl_tax', 0.0):,.2f}) in config.json.")
+    amount_excl_tax = sum(service.get('amount_usd', 0.0) * service.get('quantity', 1) for service in services)
+    vat_rate = config.get('vat_rate', 0.0)
+    vat = amount_excl_tax * (vat_rate / 100.0)
+    amount_incl_tax = amount_excl_tax + vat
+    # Store calculated values in config for PDF generation
+    config['amount_excl_tax'] = amount_excl_tax
+    config['vat'] = vat
+    config['amount_incl_tax'] = amount_incl_tax
     # Generate invoice number and ID
     invoice_number = config['invoice']['last_invoice_number'] + 1
     today = date.today()
@@ -442,7 +451,7 @@ def main():
     # --- Custom filename logic ---
     nome = config.get('output_name', 'Nicolas')
     meses_en = ['', 'January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December']
-    mes_en = meses_en[today.month - 1]
+    mes_en = meses_en[today.month]
 
     # PDF em inglês
     pdf_filename = f"{nome} - {mes_en}.pdf"
